@@ -1,87 +1,108 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
 
-# --- 頁面配置 ---
-st.set_page_config(page_title="以太坊地址風險監控", layout="wide")
+# --- Page config ---
+st.set_page_config(page_title="Ethereum Address Risk Monitor", layout="wide")
 
-# --- 從 Streamlit Secrets 讀取 API Key (部署後在後台設定) ---
-# 如果本地測試找不到 secrets，則使用預設值
+# --- API Key ---
 ETHERSCAN_API_KEY = st.secrets.get("ETHERSCAN_API_KEY", "RGJWZ5TEK21HXBKIIYNZYC5GPSSHG1ZS9Y")
 
+ETHERSCAN_BASE = "https://api.etherscan.io/v2/api"
+
+TORNADO_CASH = {"0x722122df12d4e14e13ac3b6895a86e84145b6967"}
+
 def get_tx_history(address):
-    """取得地址最近的交易紀錄"""
-    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&page=1&offset=20&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    """Fetch recent transaction history for an address"""
     try:
-        response = requests.get(url)
-        data = response.json()
-        if data["status"] == "1":
-            return data["result"]
+        resp = requests.get(ETHERSCAN_BASE, params={
+            "chainid": "1",
+            "module": "account",
+            "action": "txlist",
+            "address": address,
+            "startblock": 0,
+            "endblock": 99999999,
+            "page": 1,
+            "offset": 20,
+            "sort": "desc",
+            "apikey": ETHERSCAN_API_KEY
+        }, timeout=15)
+        data = resp.json()
+        result = data.get("result", [])
+        if isinstance(result, list):
+            return result
         return []
     except Exception as e:
-        st.error(f"連線錯誤: {e}")
+        st.error(f"Connection error: {e}")
         return []
 
 def analyze_risk(address, tx_list):
-    """簡單的風險分析邏輯"""
+    """Risk analysis logic"""
     risk_score = 0
     reasons = []
-    
+
     if not tx_list:
-        return "未知/無交易", "無法分析（無歷史資料）", "gray"
-    
-    # 範例邏輯：交易頻率過高或與已知風險地址互動（此處為示範）
+        return "Unknown", "No transaction history available", "gray"
+
     if len(tx_list) > 15:
         risk_score += 40
-        reasons.append("交易頻繁 (近期超過 15 筆)")
-    
-    # 假設某些特定地址是黑名單 (範例地址)
-    high_risk_targets = ["0x722122df12d4e14e13ac3b6895a86e84145b6967"]
+        reasons.append("High transaction frequency (>15 recent transactions)")
+
     for tx in tx_list:
-        if tx["to"].lower() in high_risk_targets:
+        if tx.get("to", "").lower() in TORNADO_CASH:
             risk_score += 60
-            reasons.append("曾與已知高風險合約互動")
+            reasons.append("Direct interaction with Tornado Cash mixer contract")
             break
 
     if risk_score >= 60:
-        return "高風險", " / ".join(reasons), "red"
+        return "HIGH RISK", " | ".join(reasons), "red"
     elif risk_score >= 30:
-        return "中風險", " / ".join(reasons), "orange"
+        return "MEDIUM RISK", " | ".join(reasons), "orange"
     else:
-        return "低風險", "交易行為正常", "green"
+        return "LOW RISK", "No significant risk indicators identified", "green"
 
-# --- 介面設計 ---
-st.title("🛡️ 以太坊地址安全監測系統")
-st.markdown("輸入以太坊錢包地址，即時分析其交易風險與行為特徵。")
+# --- UI ---
+st.title("🛡️ Ethereum Address Risk Monitor")
+st.markdown("Enter an Ethereum wallet address to analyse its on-chain transaction risk and behaviour.")
 
 with st.sidebar:
-    st.header("參數設定")
-    st.info("目前使用 Etherscan API 進行資料抓取")
-    st.write("---")
-    st.caption("v1.0.0 Stable")
+    st.header("Settings")
+    st.info("Data source: Etherscan API v2")
+    st.markdown("---")
+    st.markdown("**Test Addresses**")
+    st.code("0x722122dF12D4e14e13Ac3b6895a86e84145b6967", language=None)
+    st.caption("High Risk — Tornado Cash")
+    st.code("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", language=None)
+    st.caption("Low Risk — General wallet")
+    st.markdown("---")
+    st.caption("v1.1.0 | Etherscan API v2")
 
-address_input = st.text_input("請輸入以太坊地址 (0x...)", placeholder="0x722122dF12D4e14e13Ac3b6895a86e84145b6967")
+address_input = st.text_input(
+    "Enter Ethereum Address (0x...)",
+    placeholder="0x722122dF12D4e14e13Ac3b6895a86e84145b6967"
+)
 
 if address_input:
     if len(address_input) == 42 and address_input.startswith("0x"):
-        with st.spinner('正在從區塊鏈抓取資料...'):
+        with st.spinner("Fetching on-chain data..."):
             txs = get_tx_history(address_input)
             label, reason, color = analyze_risk(address_input, txs)
-            
-            # 顯示結果卡片
-            st.subheader("分析摘要")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("風險等級", label)
-            col2.metric("交易總數 (樣本)", len(txs))
-            col3.markdown(f"**診斷結果：** <span style='color:{color}'>{reason}</span>", unsafe_allow_html=True)
 
-            if txs:
-                st.write("---")
-                st.subheader("最近交易明細")
-                df = pd.DataFrame(txs)[['blockNumber', 'timeStamp', 'from', 'to', 'value', 'gasUsed']]
-                # 轉換時間戳
-                df['timeStamp'] = pd.to_datetime(df['timeStamp'].astype(int), unit='s')
-                st.dataframe(df, use_container_width=True)
+        st.subheader("Analysis Summary")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Risk Level", label)
+        col2.metric("Transactions Sampled", len(txs))
+        col3.markdown(
+            f"**Finding:** <span style='color:{color};font-weight:600'>{reason}</span>",
+            unsafe_allow_html=True
+        )
+
+        if txs:
+            st.markdown("---")
+            st.subheader("Recent Transaction History")
+            df = pd.DataFrame(txs)[["blockNumber", "timeStamp", "from", "to", "value", "gasUsed"]]
+            df["timeStamp"] = pd.to_datetime(df["timeStamp"].astype(int), unit="s")
+            df.columns = ["Block", "Timestamp", "From", "To", "Value (Wei)", "Gas Used"]
+            st.dataframe(df, use_container_width=True)
     else:
-        st.error("❌ 請輸入正確的以太坊地址格式")
+        st.error("❌ Invalid Ethereum address format. Address must start with 0x and be 42 characters long.")
